@@ -35,6 +35,7 @@ claude mcp add refactoring -- java -cp /path/to/vavi-mcp-refactoring.jar:... vav
 |------|-------------|
 | find-obfuscated-parameters | lists methods with obfuscated parameters, optionally with their source |
 | infer-parameter-names | infers names (dry run by default), `apply: true` writes them |
+| infer-local-names | names the parameters, then JD style locals (`localQDRect`, `arrayOfInt2`, `str`, `localIOException` ...) |
 | rename-parameter | renames one parameter in a file, refuses clashing names |
 
 ### how names are found
@@ -59,6 +60,24 @@ by default only JD-GUI/JAD style names that spell the declared type are renamed
 (`int paramInt2`, `byte[] paramArrayOfByte`, `Movie paramMovie`), real names like `param1` or `paramBlock` are kept.
 give `pattern` (e.g. `var\d+` for fernflower) to rename other styles.
 
+### local variables
+
+`infer-local-names` (cli `--locals`) names the parameters first, then the locals, in priority order
+
+ 1. a catch parameter: `e`
+ 1. the element of a for-each over `listeners`: `listener`
+ 1. a field it is assigned to
+ 1. the parameter it is passed to, also as an out parameter: `int[] arrayOfInt = new int[1]; GetMovieBox(movie, arrayOfInt)` → `box`
+ 1. a getter it is initialized with: `x = movie.getTrack(1)` → `track` (not `getIntAt`, `getStringFromPointer` ...)
+ 1. the getter it is returned from: `return x;` in `getTrack()` → `track`
+ 1. its type
+
+references are resolved by java's scoping rules (blocks, `for`, `catch`, try resources, switch blocks, pattern variables,
+locals of nested classes and lambda parameters shadowing), a local whose references can't be told apart is left alone.
+a new name never clashes with a variable whose scope overlaps or with an unqualified reference in its scope,
+so sibling blocks may share a name.
+in vavi-media-quicktime it named 1,904 of 2,071 locals, and the result compiles and passes the tests.
+
 ### name map
 
 ```
@@ -79,7 +98,7 @@ a workflow that worked for 8,000 parameters:
 
 ```
 java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex] [--poison a,b] \
-    [--unwrap ID] [--type-name QDRect=rect] [--no-type-fallback] [--report file] [--apply] srcdir...
+    [--unwrap ID] [--type-name QDRect=rect] [--no-type-fallback] [--locals] [--local-pattern re] [--report file] [--apply] srcdir...
 ```
 
 ## References
@@ -89,5 +108,5 @@ java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex]
 
 ## TODO
 
- * more refactorings (local variables `localObject1`, `arrayOfInt` ...)
- * exit when stdin is closed
+ * a name map for locals
+ * more refactorings (`localObject` reused for different types could be split, ...)

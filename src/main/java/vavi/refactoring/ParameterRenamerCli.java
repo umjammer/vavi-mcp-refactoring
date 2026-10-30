@@ -26,6 +26,8 @@ import vavi.refactoring.ParameterRenamer.Rename;
  *   --unwrap ID,...     methods whose single argument stands for itself
  *   --type-name T=name  a name for a type in the type fallback
  *   --no-type-fallback  don't name parameters after their types
+ *   --locals            also rename JD style locals (localQDRect, arrayOfInt, str ...)
+ *   --local-pattern re  locals to rename (default: JD names that spell the declared type)
  *   --report file       write the renames and the unresolved methods
  *   --apply             write the sources, a dry run without it
  * </pre>
@@ -38,7 +40,8 @@ public class ParameterRenamerCli {
     public static void main(String[] args) throws Exception {
         RenameOptions options = new RenameOptions();
         NameMap map = new NameMap();
-        boolean apply = false;
+        boolean apply = false, renameLocals = false;
+        String localPattern = null;
         Path report = null;
         List<Path> roots = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
@@ -54,11 +57,16 @@ public class ParameterRenamerCli {
                 case "--no-type-fallback" -> options.typeFallback(false);
                 case "--report" -> report = Path.of(args[++i]);
                 case "--apply" -> apply = true;
+                case "--locals" -> renameLocals = true;
+                case "--local-pattern" -> {
+                    renameLocals = true;
+                    localPattern = args[++i];
+                }
                 default -> roots.add(Path.of(args[i]));
             }
         }
         if (roots.isEmpty()) {
-            System.err.println("usage: ParameterRenamerCli [--map file] [--pattern regex] [--poison a,b] [--unwrap m,..] [--type-name T=name] [--no-type-fallback] [--report file] [--apply] srcdir...");
+            System.err.println("usage: ParameterRenamerCli [--map file] [--pattern regex] [--poison a,b] [--unwrap m,..] [--type-name T=name] [--no-type-fallback] [--locals] [--local-pattern re] [--report file] [--apply] srcdir...");
             System.exit(1);
         }
 
@@ -74,14 +82,26 @@ public class ParameterRenamerCli {
         renamer.warnings().forEach(w -> System.err.println("warning: " + w));
         System.err.println(before + " obfuscated, " + renames.size() + " renamed, " + renamer.countObfuscated(false) + " left in " + unresolved.size() + " methods");
 
+        LocalVariableRenamer locals = null;
+        if (renameLocals) {
+            locals = new LocalVariableRenamer(renamer);
+            if (localPattern != null) locals.pattern(localPattern);
+            locals.infer();
+            System.err.println(locals.locals().size() + " obfuscated locals, " + locals.renames().size() + " renamed, " + locals.unresolved().size() + " left");
+        }
+
         if (report != null) {
             StringBuilder sb = new StringBuilder();
             renames.forEach(r -> sb.append(r.method().unit().path()).append(':').append(r.method().line()).append(' ').append(r).append('\n'));
             unresolved.forEach(m -> sb.append(m.unit().path()).append(':').append(m.line()).append(" UNRESOLVED ").append(m).append('\n'));
+            if (locals != null) {
+                locals.renames().forEach(l -> sb.append(l.method().unit().path()).append(':').append(l.line()).append(" LOCAL ").append(l).append('\n'));
+                locals.unresolved().forEach(l -> sb.append(l.method().unit().path()).append(':').append(l.line()).append(" LOCAL UNRESOLVED ").append(l).append('\n'));
+            }
             Files.writeString(report, sb);
         }
         if (apply) {
-            System.err.println("wrote " + renamer.write().size() + " files");
+            System.err.println("wrote " + (locals != null ? locals.write() : renamer.write()).size() + " files");
         }
     }
 }

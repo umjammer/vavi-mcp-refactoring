@@ -41,10 +41,22 @@ class SourceEditor {
 
     private record Edit(int begin, int end, String text) {}
 
+    /** receives renames of identifiers */
+    interface EditSink {
+        void rename(SimpleName name, String to);
+    }
+
     private final JavaProject project;
+    /** nullable */
+    private final LocalVariableRenamer locals;
 
     SourceEditor(JavaProject project) {
+        this(project, null);
+    }
+
+    SourceEditor(JavaProject project, LocalVariableRenamer locals) {
         this.project = project;
+        this.locals = locals;
     }
 
     /** @return the changed files */
@@ -80,6 +92,7 @@ class SourceEditor {
                 });
             }
         }
+        if (locals != null) locals.edits(u, (name, to) -> edits.add(edit(lineStarts, name, to)));
         if (edits.isEmpty()) return null;
         edits.sort(Comparator.comparingInt(Edit::begin).reversed());
         StringBuilder sb = new StringBuilder(u.source);

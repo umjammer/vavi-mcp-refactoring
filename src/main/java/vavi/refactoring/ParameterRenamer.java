@@ -84,6 +84,9 @@ public class ParameterRenamer {
     static final Set<String> WEAK_TYPES = Set.of("String", "Object", "Boolean", "Integer", "Short", "Byte", "Long", "Float", "Double",
             "Character", "Number", "CharSequence");
 
+    /** names of helper parameters that tell nothing about the argument */
+    static final Set<String> GENERIC_NAMES = Set.of("array", "arr", "obj", "object", "param", "arg", "args", "value", "val", "ptr", "p", "src", "dest", "dst");
+
     /** a decided name */
     public record Rename(Method method, int index, String from, String to, String reason) {
 
@@ -137,7 +140,7 @@ public class ParameterRenamer {
     }
 
     /** a name not worth copying */
-    private boolean isBad(String name) {
+    boolean isBad(String name) {
         return isObfuscated(name) || options.poisonNames.contains(name);
     }
 
@@ -268,7 +271,14 @@ public class ParameterRenamer {
         return s;
     }
 
-    private record Candidate(String name, String reason) {}
+    record Candidate(String name, String reason) {}
+
+    /** a variable whose name is inferred: a parameter or a local */
+    interface Variable {
+        Type type();
+        /** whether the expression refers to this variable */
+        boolean isRef(Expression e);
+    }
 
     private List<Candidate> candidates(Method m, int i, boolean fallback) {
         List<Candidate> out = new ArrayList<>();
@@ -301,11 +311,14 @@ public class ParameterRenamer {
             fields.forEach(f -> out.add(new Candidate(f, "field")));
 
             // passed to a method or a constructor
-            out.addAll(fromCallees(m, i, p, pn, body));
+            out.addAll(fromCallees(m, new Variable() {
+                @Override public Type type() { return p.getType(); }
+                @Override public boolean isRef(Expression e) { return isParamRef(e, pn, m.decl); }
+            }, body));
         }
 
         if (fallback) {
-            String base = typeBasedName(p);
+            String base = typeBasedName(p.getType(), p.isVarArgs());
             if (base != null) {
                 String digits = pn.replaceAll("^.*?(\\d*)$", "$1");
                 out.add(new Candidate(base + digits, "type"));
@@ -315,13 +328,14 @@ public class ParameterRenamer {
         return out;
     }
 
-    private static Node body(CallableDeclaration<?> d) {
+    static Node body(CallableDeclaration<?> d) {
         if (d instanceof MethodDeclaration md) return md.getBody().orElse(null);
         if (d instanceof ConstructorDeclaration cd) return cd.getBody();
         return null;
     }
 
-    private List<Candidate> fromCallees(Method m, int i, Parameter p, String pn, Node body) {
+    /** names of the parameters the variable is passed to in the body of m */
+    List<Candidate> fromCallees(Method m, Variable v, Node body) {
         Map<String, Integer> hits = new LinkedHashMap<>();
         Map<String, String> why = new HashMap<>();
         for (Node call : body.findAll(Node.class, n -> n instanceof MethodCallExpr || n instanceof ObjectCreationExpr || n instanceof ExplicitConstructorInvocationStmt)) {
@@ -364,7 +378,7 @@ public class ParameterRenamer {
             for (int j = 0; j < args.size(); j++) {
                 Expression unwrapped = unwrap(args.get(j));
                 Expression a = unwrapCall(unwrapped);
-                if (!isParamRef(a, pn, m.decl)) continue;
+                if (!v.isRef(a)) continue;
                 boolean viaCall = a != unwrapped;
                 // a wrapper's helper methods (getIntFromPointer(ID(x)) ...) name pointers, not the object
                 if (viaCall && !apiLike) continue;
@@ -375,15 +389,18 @@ public class ParameterRenamer {
                 final int jj = j;
                 if (fits.stream().anyMatch(o -> isPending(o, jj))) continue; // wait until the overloads have names
 
-                boolean refType = !viaCall && p.getType().isClassOrInterfaceType() && !WEAK_TYPES.contains(simpleName(p.getType()));
-                boolean anyTypeMatch = callees.stream().anyMatch(o -> sameType(o.params.get(jj), p));
+                Type type = v.type();
+                boolean refType = !viaCall && type.isClassOrInterfaceType() && !WEAK_TYPES.contains(simpleName(type));
+                boolean anyTypeMatch = callees.stream().anyMatch(o -> sameType(o.params.get(jj).getType(), type));
                 Map<String, Integer> local = new HashMap<>();
                 for (Method o : callees) {
                     if (!fits.isEmpty() && !fits.contains(o)) continue;
-                    if ((anyTypeMatch || refType) && !sameType(o.params.get(j), p)) continue;
+                    if ((anyTypeMatch || refType) && !sameType(o.params.get(j).getType(), type)) continue;
                     String n = o.names[j];
                     // single letters of generic helpers (b, i, o, s ...) mean nothing, those of C APIs (h, v, r) do
                     if (n.length() == 1 && !apiLike && "xyzwhe".indexOf(n.charAt(0)) < 0) continue;
+                    // so do generic names of helpers (setIntInArray(array, offset, value) ...)
+                    if (!apiLike && GENERIC_NAMES.contains(n)) continue;
                     if (!isBad(n)) local.merge(n, 1, Integer::sum);
                 }
                 if (local.size() == 1) {
@@ -393,7 +410,7 @@ public class ParameterRenamer {
                 } else if (local.size() > 1 && owners != null) {
                     // the overloads disagree, take the one whose parameter type is the same as ours
                     for (Method o : callees) {
-                        if (isBad(o.names[j]) || !sameType(o.params.get(j), p)) continue;
+                        if (isBad(o.names[j]) || !sameType(o.params.get(j).getType(), type)) continue;
                         hits.merge(o.names[j], 1, Integer::sum);
                         why.putIfAbsent(o.names[j], "arg* " + o.key());
                     }
@@ -443,23 +460,27 @@ public class ParameterRenamer {
     }
 
     private static boolean sameType(Parameter a, Parameter b) {
-        return a.getType().asString().equals(b.getType().asString());
+        return sameType(a.getType(), b.getType());
+    }
+
+    private static boolean sameType(Type a, Type b) {
+        return a.asString().equals(b.asString());
     }
 
     private static boolean sameTypes(Method a, Method b) {
         return a.signature().equals(b.signature());
     }
 
-    private static String simpleName(Type t) {
+    static String simpleName(Type t) {
         return t.isClassOrInterfaceType() ? t.asClassOrInterfaceType().getNameAsString() : t.asString();
     }
 
     static final String EVENT = "(Mouse|MouseWheel|Key|Window|WindowFocus|Focus|Component|Container|Hierarchy|Action|Item|Adjustment|Input|Text|Paint|Invocation|PropertyChange|Change)Event";
 
     /** a name made from the declared type, null for primitives and types that tell nothing */
-    String typeBasedName(Parameter p) {
-        Type t = p.getType();
-        int dims = p.isVarArgs() ? 1 : 0;
+    String typeBasedName(Type type, boolean varArgs) {
+        Type t = type;
+        int dims = varArgs ? 1 : 0;
         while (t.isArrayType()) {
             t = t.asArrayType().getComponentType();
             dims++;

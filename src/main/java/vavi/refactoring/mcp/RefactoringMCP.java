@@ -6,7 +6,10 @@
 
 package vavi.refactoring.mcp;
 
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.nio.file.Files;
@@ -18,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -37,6 +41,8 @@ import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import vavi.refactoring.JavaProject;
 import vavi.refactoring.JavaProject.Method;
+import vavi.refactoring.LocalVariableRenamer;
+import vavi.refactoring.LocalVariableRenamer.Local;
 import vavi.refactoring.NameMap;
 import vavi.refactoring.ParameterRenamer;
 import vavi.refactoring.ParameterRenamer.Rename;
@@ -57,8 +63,8 @@ public class RefactoringMCP {
 
     static final String VERSION = "0.0.1";
 
-    static McpAsyncServer createMcpServer() {
-        StdioServerTransportProvider provider = new StdioServerTransportProvider(McpJsonDefaults.getMapper());
+    static McpAsyncServer createMcpServer(InputStream in, OutputStream out) {
+        StdioServerTransportProvider provider = new StdioServerTransportProvider(McpJsonDefaults.getMapper(), in, out);
         var server = McpServer.async(provider)
                 .serverInfo("vavi-mcp-refactoring", VERSION);
 
@@ -120,9 +126,14 @@ public class RefactoringMCP {
      */
     static final Scheduler worker = Schedulers.newSingle("refactoring");
 
+    /** tool calls received and not answered yet */
+    static final AtomicInteger inFlight = new AtomicInteger();
+    /** when a tool call was received or answered last */
+    static volatile long lastActivity = System.currentTimeMillis();
+
     /** runs a (blocking) tool body off the transport thread, exceptions become error results */
     static BiFunction<McpAsyncServerExchange, CallToolRequest, Mono<CallToolResult>> handler(Function<Map<String, Object>, Callable<String>> body) {
-        return (exchange, request) -> Mono.fromCallable(() -> {
+        return (exchange, request) -> Mono.<CallToolResult>fromCallable(() -> {
                     try {
                         return result(body.apply(request.arguments() != null ? request.arguments() : Map.of()).call(), false);
                     } catch (Exception e) {
@@ -130,7 +141,37 @@ public class RefactoringMCP {
                         return result(e.getMessage() != null ? e.getMessage() : e.toString(), true);
                     }
                 })
+                .doOnSubscribe(x -> {
+                    inFlight.incrementAndGet();
+                    lastActivity = System.currentTimeMillis();
+                })
+                .doFinally(x -> {
+                    inFlight.decrementAndGet();
+                    lastActivity = System.currentTimeMillis();
+                })
                 .subscribeOn(worker);
+    }
+
+    /**
+     * exits once the client has gone: stdin is closed, no call is running and nothing happened for a second
+     * (requests read just before the end are dispatched a little later)
+     */
+    static void exitWhenIdle() {
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (inFlight.get() == 0 && System.currentTimeMillis() - lastActivity > 1000) {
+                    logger.log(Level.DEBUG, "stdin closed, shutting down");
+                    System.exit(0);
+                }
+            }
+        }, "exit-when-idle");
+        t.setDaemon(true);
+        t.start();
     }
 
     static int intArg(Map<String, Object> args, String name, int defaultValue) {
@@ -181,6 +222,25 @@ public class RefactoringMCP {
             "description", "Source directories or java files (absolute paths), e.g. [\"/path/to/project/src/main/java\"]. Include every root whose methods are called, names propagate through them");
     static final Map<String, ?> PATTERN = Map.of("type", "string", "optional", true,
             "description", "Regex of obfuscated parameter names (default: " + RenameOptions.DEFAULT_PATTERN + ", JD-GUI/JAD style paramInt, paramArrayOfByte1 ...)");
+
+    /** the options of the parameter inference, shared by the tools that run it */
+    static final Object[] PARAMETER_OPTIONS = {
+            "name_map", Map.of("type", "string", "optional", true, "description", "Names given by hand, one method per line, '#' starts a comment"),
+            "name_map_file", Map.of("type", "string", "optional", true, "description", "A file in the name_map format, read before name_map"),
+            "poison_names", Map.of("type", "array", "items", Map.of("type", "string"), "optional", true,
+                    "description", "Names known to be wrong in the sources, they are never copied to other variables"),
+            "unwrap_calls", Map.of("type", "array", "items", Map.of("type", "string"), "optional", true,
+                    "description", "Methods whose single argument stands for itself when propagating, e.g. [\"ID\"] for QTObject.ID(movie)"),
+            "type_names", Map.of("type", "object", "additionalProperties", Map.of("type", "string"), "optional", true,
+                    "description", "Names for types in the type fallback, e.g. {\"QDRect\": \"rect\"} (default: Movie -> movie)"),
+            "type_fallback", Map.of("type", "boolean", "optional", true, "description", "Name reference type parameters after their types (default: true)"),
+    };
+
+    static Object[] concat(Object[]... arrays) {
+        List<Object> out = new ArrayList<>();
+        for (Object[] a : arrays) out.addAll(List.of(a));
+        return out.toArray();
+    }
 
     static List<Path> roots(Map<String, Object> args) {
         List<String> roots = stringsArg(args, "roots");
@@ -276,22 +336,13 @@ public class RefactoringMCP {
                         " A name is never taken when it clashes with another variable, so the code keeps its meaning." +
                         " Run it as a dry run first, check the renames and the unresolved methods, give names by hand in name_map and run again with apply." +
                         " name_map lines: 'Owner.method/arity name1 name2' or 'Owner.method(int,byte[]) name1 name2', constructors are 'Owner.<init>/2'," +
-                        " '-' keeps a name, '=name' also replaces a name that is not obfuscated (to fix a wrong one)", createSchema(properties(
+                        " '-' keeps a name, '=name' also replaces a name that is not obfuscated (to fix a wrong one)", createSchema(properties(concat(new Object[] {
                         "roots", ROOTS,
-                        "pattern", PATTERN,
-                        "name_map", Map.of("type", "string", "optional", true, "description", "Names given by hand, one method per line, '#' starts a comment"),
-                        "name_map_file", Map.of("type", "string", "optional", true, "description", "A file in the name_map format, read before name_map"),
-                        "poison_names", Map.of("type", "array", "items", Map.of("type", "string"), "optional", true,
-                                "description", "Names known to be wrong in the sources, they are never copied to other methods"),
-                        "unwrap_calls", Map.of("type", "array", "items", Map.of("type", "string"), "optional", true,
-                                "description", "Methods whose single argument stands for itself when propagating, e.g. [\"ID\"] for QTObject.ID(movie)"),
-                        "type_names", Map.of("type", "object", "additionalProperties", Map.of("type", "string"), "optional", true,
-                                "description", "Names for types in the type fallback, e.g. {\"QDRect\": \"rect\"} (default: Movie -> movie)"),
-                        "type_fallback", Map.of("type", "boolean", "optional", true, "description", "Name reference type parameters after their types (default: true)"),
+                        "pattern", PATTERN}, PARAMETER_OPTIONS, new Object[] {
                         "apply", Map.of("type", "boolean", "optional", true, "description", "Write the renames into the files (default: false, a dry run)"),
                         "report_file", Map.of("type", "string", "optional", true, "description", "Write the full list of renames and unresolved parameters to this file"),
                         "limit", Map.of("type", "number", "optional", true, "description", "At most this many renames and unresolved methods in the result (default: 200)")
-                ))),
+                })))),
                 handler(args -> () -> {
                     RenameOptions options = options(args);
                     JavaProject project = new JavaProject(roots(args));
@@ -343,6 +394,74 @@ public class RefactoringMCP {
         );
 
         server.toolCall(tool(
+                        "infer-local-names",
+                        "Infer names for decompiled local variables (JD-GUI/JAD style localQDRect, localObject1, arrayOfInt2, str, bool, localIOException)" +
+                        " and optionally write them into the sources. The parameters are named first like infer-parameter-names (same options)," +
+                        " then the locals use those names: a catch parameter is 'e', the element of a for-each over 'listeners' is 'listener'," +
+                        " then an assigned field, the parameter of the method it is passed to (out parameters like int[] arrayOfInt), a getter it is initialized with" +
+                        " (x = getTrack() -> track), the getter it is returned from and finally its type." +
+                        " References are resolved by java scoping, and a name never clashes with an overlapping variable or a reference in the scope", createSchema(properties(concat(new Object[] {
+                        "roots", ROOTS,
+                        "pattern", PATTERN}, PARAMETER_OPTIONS, new Object[] {
+                        "local_pattern", Map.of("type", "string", "optional", true,
+                                "description", "Regex of locals to rename (default: " + LocalVariableRenamer.DEFAULT_PATTERN + " that spell the declared type)"),
+                        "apply", Map.of("type", "boolean", "optional", true, "description", "Write the parameter and local renames into the files (default: false, a dry run)"),
+                        "report_file", Map.of("type", "string", "optional", true, "description", "Write the full list of renames and unresolved variables to this file"),
+                        "limit", Map.of("type", "number", "optional", true, "description", "At most this many renames and unresolved locals in the result (default: 200)")
+                })))),
+                handler(args -> () -> {
+                    JavaProject project = new JavaProject(roots(args));
+                    ParameterRenamer renamer = new ParameterRenamer(project, options(args));
+                    renamer.apply(nameMap(args));
+                    renamer.infer();
+                    LocalVariableRenamer locals = new LocalVariableRenamer(renamer);
+                    String localPattern = stringArg(args, "local_pattern", null);
+                    if (localPattern != null) locals.pattern(localPattern);
+                    locals.infer();
+                    List<Local> renames = locals.renames();
+                    List<Local> unresolved = locals.unresolved();
+                    int limit = intArg(args, "limit", 200);
+
+                    Map<String, Integer> byReason = new TreeMap<>();
+                    renames.forEach(l -> byReason.merge(category(l.reason()), 1, Integer::sum));
+
+                    StringBuilder sb = new StringBuilder();
+                    sb.append(renamer.countObfuscated(true)).append(" obfuscated parameters, ").append(renamer.renames().size()).append(" renamed, ")
+                            .append(renamer.countObfuscated(false)).append(" left\n");
+                    sb.append(locals.locals().size()).append(" obfuscated locals, ").append(renames.size()).append(" renamed ").append(byReason)
+                            .append(", ").append(unresolved.size()).append(" left\n");
+                    project.problems().forEach(p -> sb.append("parse error: ").append(p).append('\n'));
+                    renamer.warnings().stream().limit(20).forEach(w -> sb.append("warning: ").append(w).append('\n'));
+
+                    String reportFile = stringArg(args, "report_file", null);
+                    if (reportFile != null) {
+                        StringBuilder report = new StringBuilder();
+                        renamer.renames().forEach(r -> report.append(location(r.method())).append(' ').append(r).append('\n'));
+                        renames.forEach(l -> report.append(l.method().unit().path()).append(':').append(l.line()).append(" LOCAL ").append(l).append('\n'));
+                        unresolved.forEach(l -> report.append(l.method().unit().path()).append(':').append(l.line()).append(" LOCAL UNRESOLVED ").append(l).append('\n'));
+                        Files.writeString(Path.of(reportFile), report);
+                        sb.append("report: ").append(reportFile).append('\n');
+                    }
+
+                    if (booleanArg(args, "apply", false)) {
+                        sb.append("wrote ").append(locals.write().size()).append(" files\n");
+                    } else {
+                        sb.append("dry run, nothing written (use apply: true)\n");
+                    }
+
+                    sb.append("\nlocal renames:\n");
+                    renames.stream().limit(limit).forEach(l -> sb.append("  ").append(l).append('\n'));
+                    if (renames.size() > limit) sb.append("  ... ").append(renames.size() - limit).append(" more").append(reportFile == null ? ", use report_file" : "").append('\n');
+                    if (!unresolved.isEmpty()) {
+                        sb.append("\nunresolved locals:\n");
+                        unresolved.stream().limit(limit).forEach(l -> sb.append("  ").append(l).append("  ").append(l.method().unit().path()).append(':').append(l.line()).append('\n'));
+                        if (unresolved.size() > limit) sb.append("  ... ").append(unresolved.size() - limit).append(" more\n");
+                    }
+                    return sb.toString();
+                })
+        );
+
+        server.toolCall(tool(
                         "rename-parameter",
                         "Rename one parameter of a method in a java file, the declaration, its references and the javadoc @param tag." +
                         " Refuses names that clash with other variables in the method", createSchema(properties(
@@ -383,7 +502,21 @@ public class RefactoringMCP {
     /** Main Application */
     public static void main(String[] args) {
         try {
-            createMcpServer();
+            // the client closes stdin when it goes away
+            InputStream in = new FilterInputStream(System.in) {
+                boolean closed;
+                int eof(int n) {
+                    if (n < 0 && !closed) {
+                        closed = true;
+                        lastActivity = System.currentTimeMillis();
+                        exitWhenIdle();
+                    }
+                    return n;
+                }
+                @Override public int read() throws IOException { return eof(super.read()); }
+                @Override public int read(byte[] b, int off, int len) throws IOException { return eof(super.read(b, off, len)); }
+            };
+            createMcpServer(in, System.out);
             logger.log(Level.DEBUG, "Refactoring MCP Server running on stdio");
             // Keep the main thread alive
             Thread.currentThread().join();
