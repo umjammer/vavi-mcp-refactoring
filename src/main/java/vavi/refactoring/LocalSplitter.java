@@ -40,8 +40,11 @@ import com.github.javaparser.ast.expr.ThisExpr;
 import com.github.javaparser.ast.expr.VariableDeclarationExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.stmt.ExpressionStmt;
+import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.stmt.Statement;
+import com.github.javaparser.ast.stmt.SwitchEntry;
+import com.github.javaparser.ast.stmt.SwitchStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.Type;
 import vavi.refactoring.JavaProject.Unit;
@@ -62,6 +65,8 @@ import static java.lang.System.getLogger;
  * </pre>
  * A variable is split at an assignment statement {@code v = expr;} directly in the block that declares it
  * (and whose expression doesn't read v): nothing assigned before it can be read after it, so the pieces are independent.
+ * The case groups of a switch statement count as one block: a jump to a later case leaves the variable unassigned.
+ * A variable declared in a for loop is not split (the condition and the update carry its value around), it can be retyped.
  * <p>
  * A piece declared {@code Object} gets the type {@code Foo} only when all its values are {@code (Foo) x} casts, {@code new Foo(...)}
  * or fields declared {@code Foo},
@@ -101,6 +106,8 @@ public class LocalSplitter {
 
     private final JavaProject project;
     private final LocalVariableRenamer locals;
+    /** a retyped declaration gets "var" when its type is longer than this, 0 for never */
+    private int varOver;
     private final List<Split> splits = new ArrayList<>();
     private int retyped;
 
@@ -110,6 +117,15 @@ public class LocalSplitter {
     public LocalSplitter(LocalVariableRenamer locals) {
         this.locals = locals;
         this.project = locals.project();
+    }
+
+    /**
+     * declares retyped pieces with "var" when the type is longer than the length and the initializer has exactly that type
+     * @param length 0 for never
+     */
+    public LocalSplitter varOver(int length) {
+        this.varOver = length;
+        return this;
     }
 
     public List<Split> splits() {
@@ -141,12 +157,31 @@ public class LocalSplitter {
     /** @return edits, null when the local is not split or retyped */
     private List<Edit> split(Local l, Set<String> taken) {
         if (l.ambiguous || !(l.declaration instanceof VariableDeclarator v) ||
-                !(v.getParentNode().orElse(null) instanceof VariableDeclarationExpr vde) || vde.getVariables().size() != 1 ||
-                !(vde.getParentNode().orElse(null) instanceof ExpressionStmt declStmt) || !(l.scope instanceof BlockStmt block)) return null;
-        List<Statement> statements = block.getStatements();
+                !(v.getParentNode().orElse(null) instanceof VariableDeclarationExpr vde) || vde.getVariables().size() != 1) return null;
+        Node holder = vde.getParentNode().orElse(null);
+        // the statements the variable lives in, in the order they run when nothing jumps
+        List<Statement> statements;
+        ExpressionStmt declStmt = null;
+        if (holder instanceof ExpressionStmt es && l.scope instanceof BlockStmt block) {
+            statements = block.getStatements();
+            declStmt = es;
+        } else if (holder instanceof ExpressionStmt es && l.scope instanceof SwitchStmt sw &&
+                sw.getEntries().stream().allMatch(e -> e.getType() == SwitchEntry.Type.STATEMENT_GROUP)) {
+            // a jump to a later case leaves the variable unassigned, so a piece can't be read past its start there either
+            statements = new ArrayList<>();
+            sw.getEntries().forEach(e -> statements.addAll(e.getStatements()));
+            declStmt = es;
+        } else if (holder instanceof ForStmt fs && fs.getInitialization().stream().anyMatch(i -> i == vde)) {
+            // the condition and the update carry the value around, it can only get another type
+            statements = null;
+        } else {
+            return null;
+        }
         int declIndex = -1;
-        for (int i = 0; i < statements.size(); i++) if (statements.get(i) == declStmt) declIndex = i;
-        if (declIndex < 0) return null;
+        if (statements != null) {
+            for (int i = 0; i < statements.size(); i++) if (statements.get(i) == declStmt) declIndex = i;
+            if (declIndex < 0) return null;
+        }
         // identities, javaparser nodes are equal when they look the same
         Set<Node> refs = Collections.newSetFromMap(new IdentityHashMap<>());
         refs.addAll(l.refs);
@@ -157,7 +192,7 @@ public class LocalSplitter {
         first.name = l.originalName;
         pieces.add(first);
         Map<Statement, Piece> starts = new IdentityHashMap<>();
-        for (int i = declIndex + 1; i < statements.size(); i++) {
+        for (int i = declIndex + 1; statements != null && i < statements.size(); i++) {
             if (statements.get(i) instanceof ExpressionStmt es && es.getExpression() instanceof AssignExpr a &&
                     a.getOperator() == AssignExpr.Operator.ASSIGN && refs.contains(a.getTarget()) &&
                     a.getValue().findAll(NameExpr.class).stream().noneMatch(refs::contains)) {
@@ -170,7 +205,11 @@ public class LocalSplitter {
         // references go to the piece of their statement in the block
         Piece current = first;
         Map<NameExpr, Piece> owner = new IdentityHashMap<>();
-        for (int i = declIndex + 1; i < statements.size(); i++) {
+        if (statements == null) {
+            first.refs.addAll(l.refs);
+            l.refs.forEach(r -> owner.put(r, first));
+        }
+        for (int i = declIndex + 1; statements != null && i < statements.size(); i++) {
             Piece p = starts.get(statements.get(i));
             if (p != null) current = p;
             for (NameExpr r : statements.get(i).findAll(NameExpr.class)) {
@@ -216,12 +255,13 @@ public class LocalSplitter {
                 if (dropDeclaration) {
                     edits.add(deleteStatement(l.method.unit.source, lineStarts, declStmt));
                 } else if (retype) {
-                    edits.add(replace(lineStarts, v.getType(), p.type));
+                    edits.add(replace(lineStarts, v.getType(), declaredType(l, p.type, v.getInitializer().orElse(null))));
                 }
             } else {
                 AssignExpr a = (AssignExpr) p.start.getExpression();
                 Position b = a.getTarget().getBegin().get();
-                edits.add(new Edit(offset(lineStarts, b), offset(lineStarts, a.getTarget().getEnd().get()) + 1, p.type + " " + p.name));
+                String type = retype ? declaredType(l, p.type, a.getValue()) : p.type;
+                edits.add(new Edit(offset(lineStarts, b), offset(lineStarts, a.getTarget().getEnd().get()) + 1, type + " " + p.name));
             }
             for (NameExpr r : p.refs) {
                 if (p.start != null && r == ((AssignExpr) p.start.getExpression()).getTarget()) continue;
@@ -273,17 +313,37 @@ public class LocalSplitter {
         }
         String valueType = null;
         for (Expression e : values) {
-            String t;
             if (e instanceof NullLiteralExpr) continue;
-            else if (e instanceof CastExpr c) t = c.getType().asString();
-            else if (e instanceof ObjectCreationExpr oc && !isDiamond(oc.getType())) t = oc.getType().asString();
-            else if (e instanceof EnclosedExpr ee && ee.getInner() instanceof CastExpr c2) t = c2.getType().asString();
-            else if ((t = fieldType(l, e)) == null) return null;
+            String t = valueType(l, e);
+            if (t == null) return null;
             if (valueType == null) valueType = t;
             else if (!valueType.equals(t)) return null;
         }
         if (valueType == null || valueType.equals("Object") || type != null && !type.equals(valueType)) return null;
         return valueType;
+    }
+
+    /**
+     * the static type of a value: a cast, a {@code new}, {@code this.f}, a local, a parameter or a field,
+     * or a field of one of them ({@code ((Node) x).next}).
+     * @return null when it can't be told
+     */
+    private String valueType(Local l, Expression e) {
+        if (e instanceof EnclosedExpr ee) return valueType(l, ee.getInner());
+        if (e instanceof CastExpr c) return c.getType().asString();
+        if (e instanceof ObjectCreationExpr oc) return isDiamond(oc.getType()) ? null : oc.getType().asString();
+        if (e instanceof FieldAccessExpr fa && !(fa.getScope() instanceof ThisExpr)) {
+            String scope = valueType(l, fa.getScope());
+            return scope == null || scope.equals("Object") ? null : project.fieldType(scope, fa.getNameAsString());
+        }
+        return fieldType(l, e);
+    }
+
+    /** the type to write for a retyped declaration, "var" when it is long and the initializer has exactly the type */
+    private String declaredType(Local l, String type, Expression initializer) {
+        if (varOver <= 0 || type.length() <= varOver || initializer == null || initializer instanceof NullLiteralExpr) return type;
+        if (initializer instanceof ObjectCreationExpr oc && oc.getAnonymousClassBody().isPresent()) return type; // var would be the anonymous class
+        return type.equals(valueType(l, initializer)) ? "var" : type;
     }
 
     /** the declared type of {@code this.f}, or of an unqualified {@code f} that is a local, a parameter or a field, null otherwise */

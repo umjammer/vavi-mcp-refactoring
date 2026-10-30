@@ -94,9 +94,14 @@ localObject1 = this.list;              →     TickleNode tickleNode = this.list
 
 a variable is split at `v = expr;` statements directly in its declaring block (and not reading `v`),
 nothing assigned before can be read after such a statement, so the pieces are independent.
+the case groups of a `switch` statement count as one block (a jump to a later case leaves the variable unassigned).
+a variable declared in a `for` loop is not split, its condition and update carry the value around, it can be retyped:
+`for (Object o = this.head; o != null; o = ((Node) o).next)` → `for (Node node = this.head; node != null; node = node.next)`.
 an `Object` piece gets the type of its values when they are all casts, `new` or variables/fields of one type,
 and it is used only cast to that type, compared, tested by `instanceof`, assigned or returned (an argument could change the overload),
 then the casts are gone. a declaration whose value is never read is joined with the first assignment.
+with `var_over` (cli `--var-over n`) a retyped piece whose type is longer than n characters is declared `var`,
+when its initializer has exactly that type (a cast, a `new` that is not anonymous, a variable or a field).
 
 #### names by hand
 
@@ -125,7 +130,7 @@ a workflow that worked for 8,000 parameters:
 
 ```
 java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex] [--poison a,b] \
-    [--unwrap ID] [--type-name QDRect=rect] [--no-type-fallback] [--locals] [--local-pattern re] [--split] [--report file] [--apply] srcdir...
+    [--unwrap ID] [--type-name QDRect=rect] [--no-type-fallback] [--locals] [--local-pattern re] [--split] [--var-over n] [--report file] [--apply] srcdir...
 ```
 
 ## References
@@ -135,5 +140,4 @@ java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex]
 
 ## TODO
 
- * split locals declared in other places than a block (`for`, `switch`)
- * `var` for retyped pieces whose type is long
+ * types of method return values for retyping (needs symbol solving)

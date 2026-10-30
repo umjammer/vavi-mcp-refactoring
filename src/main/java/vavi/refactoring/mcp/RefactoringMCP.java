@@ -408,6 +408,8 @@ public class RefactoringMCP {
                         "roots", ROOTS,
                         "pattern", PATTERN}, PARAMETER_OPTIONS, new Object[] {
                         "split_reused", Map.of("type", "boolean", "optional", true, "description", "Split locals reused for different values first (default: false)"),
+                        "var_over", Map.of("type", "number", "optional", true,
+                                "description", "With split_reused, declare retyped pieces with var when the type is longer than this many characters (default: 0, never)"),
                         "local_pattern", Map.of("type", "string", "optional", true,
                                 "description", "Regex of locals to rename (default: " + LocalVariableRenamer.DEFAULT_PATTERN + " that spell the declared type)"),
                         "apply", Map.of("type", "boolean", "optional", true, "description", "Write the parameter and local renames into the files (default: false, a dry run)"),
@@ -416,7 +418,7 @@ public class RefactoringMCP {
                 })))),
                 handler(args -> () -> {
                     Deobfuscator d = new Deobfuscator(roots(args), options(args)).nameMap(nameMap(args)).locals(true)
-                            .localPattern(stringArg(args, "local_pattern", null)).split(booleanArg(args, "split_reused", false)).run();
+                            .localPattern(stringArg(args, "local_pattern", null)).split(booleanArg(args, "split_reused", false)).varOver(intArg(args, "var_over", 0)).run();
                     JavaProject project = d.project();
                     ParameterRenamer renamer = d.parameters();
                     LocalVariableRenamer locals = d.locals();

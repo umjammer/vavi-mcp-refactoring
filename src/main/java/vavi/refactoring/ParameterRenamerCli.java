@@ -29,6 +29,7 @@ import vavi.refactoring.ParameterRenamer.Rename;
  *   --locals            also rename JD style locals (localQDRect, arrayOfInt, str ...)
  *   --local-pattern re  locals to rename (default: JD names that spell the declared type)
  *   --split             split locals reused for different values (localObject) first, implies --locals
+ *   --var-over n        declare retyped pieces with var when the type is longer than n characters
  *   --report file       write the renames and the unresolved methods
  *   --apply             write the sources, a dry run without it
  * </pre>
@@ -42,6 +43,7 @@ public class ParameterRenamerCli {
         RenameOptions options = new RenameOptions();
         NameMap map = new NameMap();
         boolean apply = false, renameLocals = false, split = false;
+        int varOver = 0;
         String localPattern = null;
         Path report = null;
         List<Path> roots = new ArrayList<>();
@@ -60,6 +62,7 @@ public class ParameterRenamerCli {
                 case "--apply" -> apply = true;
                 case "--locals" -> renameLocals = true;
                 case "--split" -> split = true;
+                case "--var-over" -> varOver = Integer.parseInt(args[++i]);
                 case "--local-pattern" -> {
                     renameLocals = true;
                     localPattern = args[++i];
@@ -68,11 +71,11 @@ public class ParameterRenamerCli {
             }
         }
         if (roots.isEmpty()) {
-            System.err.println("usage: ParameterRenamerCli [--map file] [--pattern regex] [--poison a,b] [--unwrap m,..] [--type-name T=name] [--no-type-fallback] [--locals] [--local-pattern re] [--split] [--report file] [--apply] srcdir...");
+            System.err.println("usage: ParameterRenamerCli [--map file] [--pattern regex] [--poison a,b] [--unwrap m,..] [--type-name T=name] [--no-type-fallback] [--locals] [--local-pattern re] [--split] [--var-over n] [--report file] [--apply] srcdir...");
             System.exit(1);
         }
 
-        Deobfuscator d = new Deobfuscator(roots, options).nameMap(map).locals(renameLocals).localPattern(localPattern).split(split).run();
+        Deobfuscator d = new Deobfuscator(roots, options).nameMap(map).locals(renameLocals).localPattern(localPattern).split(split).varOver(varOver).run();
         JavaProject project = d.project();
         ParameterRenamer renamer = d.parameters();
         List<Rename> renames = renamer.renames();

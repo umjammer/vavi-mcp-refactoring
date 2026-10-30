@@ -27,6 +27,7 @@ public class Deobfuscator {
     private boolean locals;
     private String localPattern;
     private boolean split;
+    private int varOver;
 
     private JavaProject project;
     private ParameterRenamer parameterRenamer;
@@ -63,6 +64,12 @@ public class Deobfuscator {
         return this;
     }
 
+    /** declares retyped pieces with "var" when the type is longer than the length, 0 for never */
+    public Deobfuscator varOver(int length) {
+        this.varOver = length;
+        return this;
+    }
+
     private LocalVariableRenamer newLocalRenamer(ParameterRenamer parameters) {
         LocalVariableRenamer l = new LocalVariableRenamer(parameters);
         if (localPattern != null) l.pattern(localPattern);
@@ -73,7 +80,7 @@ public class Deobfuscator {
     public Deobfuscator run() throws IOException {
         project = new JavaProject(roots);
         if (split) {
-            splitter = new LocalSplitter(newLocalRenamer(new ParameterRenamer(project, options)));
+            splitter = new LocalSplitter(newLocalRenamer(new ParameterRenamer(project, options))).varOver(varOver);
             project = splitter.split();
         }
         parameterRenamer = new ParameterRenamer(project, options);

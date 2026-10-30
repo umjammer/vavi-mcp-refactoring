@@ -183,4 +183,83 @@ class LocalSplitterTest {
         assertTrue(result.contains("String str = \"c\";"), "g is not in the map");
         assertCompiles(p);
     }
+
+    @Test
+    void splitsInSwitch() throws Exception {
+        Path node = write("Node.java", NODE);
+        Path p = write("A.java", """
+                class A {
+                    Node head;
+                    void f(int k) {
+                        switch (k) {
+                        case 0:
+                            Object localObject = new Thread();
+                            ((Thread) localObject).start();
+                            localObject = this.head;
+                            ((Node) localObject).next = null;
+                            break;
+                        case 1:
+                            localObject = new Thread();
+                            ((Thread) localObject).run();
+                            break;
+                        }
+                    }
+                }
+                """);
+        Deobfuscator d = new Deobfuscator(List.of(dir), new RenameOptions()).split(true).run();
+        assertEquals(1, d.splitter().splits().size(), d.splitter().splits().toString());
+        d.write();
+        String result = Files.readString(p);
+        assertTrue(result.contains("Node node = this.head;"), result);
+        assertTrue(result.contains("node.next = null;"), result);
+        // the assignment in case 1 starts a piece of its own (a Thread), a jump there leaves the variable unassigned
+        assertCompiles(node, p);
+    }
+
+    @Test
+    void retypesForLoops() throws Exception {
+        Path node = write("Node.java", NODE);
+        Path p = write("A.java", """
+                class A {
+                    Node head;
+                    int count() {
+                        int n = 0;
+                        for (Object localObject = this.head; localObject != null; localObject = ((Node) localObject).next) {
+                            if (((Node) localObject).action != null) n++;
+                        }
+                        return n;
+                    }
+                }
+                """);
+        Deobfuscator d = new Deobfuscator(List.of(dir), new RenameOptions()).split(true).run();
+        assertEquals(1, d.splitter().retyped(), d.splitter().splits().toString());
+        d.write();
+        String result = Files.readString(p);
+        assertTrue(result.contains("for (Node node = this.head; node != null; node = node.next) {"), result);
+        assertTrue(result.contains("if (node.action != null) n++;"), result);
+        assertCompiles(node, p);
+    }
+
+    @Test
+    void varForLongTypes() throws Exception {
+        Path p = write("A.java", """
+                import java.util.concurrent.ConcurrentHashMap;
+
+                class A {
+                    void f() {
+                        Object localObject = null;
+                        localObject = new ConcurrentHashMap<String, Thread>();
+                        ((ConcurrentHashMap<String, Thread>) localObject).clear();
+                        localObject = (Thread) Thread.currentThread();
+                        ((Thread) localObject).interrupt();
+                    }
+                }
+                """);
+        new Deobfuscator(List.of(dir), new RenameOptions()).split(true).varOver(20).run().write();
+        String result = Files.readString(p);
+        assertTrue(result.contains("var concurrentHashMap = new ConcurrentHashMap<String, Thread>();"), result);
+        assertTrue(result.contains("concurrentHashMap.clear();"), result);
+        assertTrue(result.contains("Thread thread = (Thread) Thread.currentThread();"), "a short type stays");
+        assertCompiles(p);
+    }
 }

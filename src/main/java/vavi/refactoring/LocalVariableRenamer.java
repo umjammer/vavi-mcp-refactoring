@@ -28,6 +28,9 @@ import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
+import com.github.javaparser.ast.expr.EnclosedExpr;
+import com.github.javaparser.ast.expr.CastExpr;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
@@ -283,7 +286,7 @@ public class LocalVariableRenamer {
             } else {
                 return null;
             }
-            return new Local(innermost(m, v), m, v, v.getName(), v.getType(), scope);
+            return new Local(innermost(m, v), m, v, v.getName(), declaredType(v), scope);
         }
         if (n instanceof Parameter p && p.getParentNode().orElse(null) instanceof CatchClause cc) {
             return new Local(innermost(m, p), m, p, p.getName(), p.getType(), cc);
@@ -296,6 +299,16 @@ public class LocalVariableRenamer {
             return new Local(innermost(m, tp), m, tp, tp.getName(), tp.getType(), scope);
         }
         return null;
+    }
+
+    /** the type of the variable, the one of a cast or a new initializer for "var" */
+    private static Type declaredType(VariableDeclarator v) {
+        if (!v.getType().isVarType() || v.getInitializer().isEmpty()) return v.getType();
+        Expression e = v.getInitializer().get();
+        while (e instanceof EnclosedExpr ee) e = ee.getInner();
+        if (e instanceof CastExpr c) return c.getType();
+        if (e instanceof ObjectCreationExpr oc && oc.getAnonymousClassBody().isEmpty()) return oc.getType();
+        return v.getType();
     }
 
     /** the innermost method containing the node, for propagation */
