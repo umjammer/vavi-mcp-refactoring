@@ -68,8 +68,8 @@ import static java.lang.System.getLogger;
  * The case groups of a switch statement count as one block: a jump to a later case leaves the variable unassigned.
  * A variable declared in a for loop is not split (the condition and the update carry its value around), it can be retyped.
  * <p>
- * A piece declared {@code Object} gets the type {@code Foo} only when all its values are {@code (Foo) x} casts, {@code new Foo(...)}
- * or fields declared {@code Foo},
+ * A piece declared {@code Object} gets the type {@code Foo} only when all its values are {@code (Foo) x} casts, {@code new Foo(...)},
+ * variables or fields declared {@code Foo}, or calls of methods returning {@code Foo} (by the symbol solver),
  * and it is used only cast to Foo, compared, tested by instanceof, assigned or returned, so no method overload changes.
  * The casts become identities and are removed.
  * <p>
@@ -336,7 +336,9 @@ public class LocalSplitter {
             String scope = valueType(l, fa.getScope());
             return scope == null || scope.equals("Object") ? null : project.fieldType(scope, fa.getNameAsString());
         }
-        return fieldType(l, e);
+        String t = fieldType(l, e);
+        // method return values and anything else, by the symbol solver
+        return t != null ? t : project.typeText(e);
     }
 
     /** the type to write for a retyped declaration, "var" when it is long and the initializer has exactly the type */

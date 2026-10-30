@@ -262,4 +262,36 @@ class LocalSplitterTest {
         assertTrue(result.contains("Thread thread = (Thread) Thread.currentThread();"), "a short type stays");
         assertCompiles(p);
     }
+
+    @Test
+    void retypesMethodReturnValues() throws Exception {
+        Path node = write("Node.java", NODE);
+        Path p = write("A.java", """
+                import java.util.ArrayList;
+                import java.util.List;
+
+                class A {
+                    List<Node> nodes = new ArrayList<>();
+                    Node first() { return nodes.get(0); }
+                    void f() {
+                        Object localObject = null;
+                        localObject = first();
+                        ((Node) localObject).next = null;
+                        localObject = Thread.currentThread();
+                        ((Thread) localObject).interrupt();
+                        localObject = nodes.get(1);
+                        ((Node) localObject).action = null;
+                    }
+                }
+                """);
+        Deobfuscator d = new Deobfuscator(List.of(dir), new RenameOptions()).split(true).run();
+        assertEquals(3, d.splitter().retyped(), d.splitter().splits().toString());
+        d.write();
+        String result = Files.readString(p);
+        assertTrue(result.contains("Node node = first();"), "a method of the project: " + result);
+        assertTrue(result.contains("Thread thread = Thread.currentThread();"), "a jdk method: " + result);
+        assertTrue(result.contains("Node node3 = nodes.get(1);"), "a generic return type: " + result);
+        assertFalse(result.contains("(Node) "), result);
+        assertCompiles(node, p);
+    }
 }

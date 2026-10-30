@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,6 +36,13 @@ import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.resolution.types.ResolvedReferenceType;
+import com.github.javaparser.resolution.types.ResolvedType;
+import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
 
 import static java.lang.System.getLogger;
 
@@ -289,6 +297,86 @@ public class JavaProject {
             q.addAll(supers(t));
         }
         return null;
+    }
+
+    // ---- types by the symbol solver ----
+
+    private boolean solverReady;
+
+    /** sets the symbol solver up for all units: the jdk by reflection and the source roots of the units */
+    private void prepareSolver() {
+        solverReady = true;
+        ParserConfiguration conf = new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25);
+        CombinedTypeSolver solver = new CombinedTypeSolver(new ReflectionTypeSolver());
+        Set<Path> sourceRoots = new LinkedHashSet<>();
+        for (Unit u : units) {
+            Path dir = u.path.toAbsolutePath().normalize().getParent();
+            String pkg = u.cu.getPackageDeclaration().map(d -> d.getNameAsString()).orElse("");
+            Path root = dir;
+            boolean ok = true;
+            if (!pkg.isEmpty()) {
+                String[] parts = pkg.split("\\.");
+                for (int i = parts.length - 1; i >= 0 && ok; i--) {
+                    if (root == null || !root.getFileName().toString().equals(parts[i])) ok = false;
+                    else root = root.getParent();
+                }
+            }
+            if (ok && root != null) sourceRoots.add(root);
+        }
+        sourceRoots.forEach(r -> solver.add(new JavaParserTypeSolver(r, conf)));
+        JavaSymbolSolver symbolSolver = new JavaSymbolSolver(solver);
+        units.forEach(u -> symbolSolver.inject(u.cu));
+        logger.log(Level.DEBUG, "symbol solver: " + sourceRoots);
+    }
+
+    /**
+     * the static type of an expression as it can be written in its file.
+     * @return null when it can't be resolved or written (a type variable, a wildcard, an anonymous class)
+     */
+    String typeText(Expression e) {
+        if (!solverReady) prepareSolver();
+        CompilationUnit cu = e.findCompilationUnit().orElse(null);
+        if (cu == null) return null;
+        try {
+            return typeText(e.calculateResolvedType(), cu);
+        } catch (Throwable t) { // unsolved symbols, unsupported syntax ...
+            logger.log(Level.TRACE, "unresolved: " + e + ": " + t);
+            return null;
+        }
+    }
+
+    private static String typeText(ResolvedType t, CompilationUnit cu) {
+        if (t.isPrimitive()) return t.describe();
+        if (t.isArray()) {
+            String c = typeText(t.asArrayType().getComponentType(), cu);
+            return c != null ? c + "[]" : null;
+        }
+        if (!t.isReferenceType()) return null;
+        ResolvedReferenceType r = t.asReferenceType();
+        var decl = r.getTypeDeclaration().orElse(null);
+        if (decl == null || decl.isAnonymousClass()) return null;
+        String qualified = r.getQualifiedName();
+        String pkg = decl.getPackageName();
+        String inPackage = pkg.isEmpty() ? qualified : qualified.substring(pkg.length() + 1);
+        String top = inPackage.contains(".") ? inPackage.substring(0, inPackage.indexOf('.')) : inPackage;
+        String name = qualified;
+        // a single type import of another type with the name hides the package and java.lang
+        boolean hidden = cu.getImports().stream().anyMatch(i -> !i.isStatic() && !i.isAsterisk() &&
+                i.getName().getIdentifier().equals(top) && !i.getNameAsString().equals(pkg.isEmpty() ? top : pkg + "." + top));
+        boolean imported = cu.getImports().stream().anyMatch(i -> !i.isStatic() &&
+                (!i.isAsterisk() && i.getNameAsString().equals(pkg.isEmpty() ? top : pkg + "." + top) || i.isAsterisk() && i.getNameAsString().equals(pkg)));
+        String cuPackage = cu.getPackageDeclaration().map(d -> d.getNameAsString()).orElse("");
+        if (imported || !hidden && (pkg.equals(cuPackage) || pkg.equals("java.lang"))) name = inPackage;
+        if (r.isRawType()) return name;
+        List<ResolvedType> args = r.typeParametersValues();
+        if (args.isEmpty()) return name;
+        StringBuilder sb = new StringBuilder(name).append('<');
+        for (int i = 0; i < args.size(); i++) {
+            String a = typeText(args.get(i), cu);
+            if (a == null) return null;
+            sb.append(i > 0 ? ", " : "").append(a);
+        }
+        return sb.append('>').toString();
     }
 
     /** all super and sub types of the type, excluding itself */

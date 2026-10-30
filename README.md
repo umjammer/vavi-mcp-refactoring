@@ -98,6 +98,7 @@ the case groups of a `switch` statement count as one block (a jump to a later ca
 a variable declared in a `for` loop is not split, its condition and update carry the value around, it can be retyped:
 `for (Object o = this.head; o != null; o = ((Node) o).next)` → `for (Node node = this.head; node != null; node = node.next)`.
 an `Object` piece gets the type of its values when they are all casts, `new` or variables/fields of one type,
+or of any other expression the javaparser symbol solver resolves (method return values of the project and the jdk, generics like `List<Node>.get(0)`),
 and it is used only cast to that type, compared, tested by `instanceof`, assigned or returned (an argument could change the overload),
 then the casts are gone. a declaration whose value is never read is joined with the first assignment.
 with `var_over` (cli `--var-over n`) a retyped piece whose type is longer than n characters is declared `var`,
@@ -140,4 +141,4 @@ java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex]
 
 ## TODO
 
- * types of method return values for retyping (needs symbol solving)
+ * nothing for now
