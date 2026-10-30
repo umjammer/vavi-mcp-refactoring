@@ -278,6 +278,10 @@ public class ParameterRenamer {
         Type type();
         /** whether the expression refers to this variable */
         boolean isRef(Expression e);
+        /** a local takes no generic names of helpers, a parameter of a helper wrapper has them rightly */
+        default boolean isLocal() {
+            return false;
+        }
     }
 
     private List<Candidate> candidates(Method m, int i, boolean fallback) {
@@ -399,8 +403,8 @@ public class ParameterRenamer {
                     String n = o.names[j];
                     // single letters of generic helpers (b, i, o, s ...) mean nothing, those of C APIs (h, v, r) do
                     if (n.length() == 1 && !apiLike && "xyzwhe".indexOf(n.charAt(0)) < 0) continue;
-                    // so do generic names of helpers (setIntInArray(array, offset, value) ...)
-                    if (!apiLike && GENERIC_NAMES.contains(n)) continue;
+                    // so do generic names of helpers for a local (setIntInArray(array, offset, value) ...)
+                    if (v.isLocal() && !apiLike && GENERIC_NAMES.contains(n)) continue;
                     if (!isBad(n)) local.merge(n, 1, Integer::sum);
                 }
                 if (local.size() == 1) {

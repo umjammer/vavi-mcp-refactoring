@@ -64,6 +64,7 @@ class SourceEditor {
         List<Path> changed = new ArrayList<>();
         for (Unit u : project.units) {
             String result = edit(u);
+            if (result == null && u.modified) result = u.source;
             if (result != null) {
                 Files.writeString(u.path, result);
                 changed.add(u.path);

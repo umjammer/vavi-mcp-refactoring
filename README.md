@@ -78,6 +78,33 @@ a new name never clashes with a variable whose scope overlaps or with an unquali
 so sibling blocks may share a name.
 in vavi-media-quicktime it named 1,904 of 2,071 locals, and the result compiles and passes the tests.
 
+#### reused locals
+
+with `split_reused` (cli `--split`) a local JD reuses for different values is split into one variable per value first.
+
+```java
+Object localObject1;                         Object localObject1;
+do {                                         do {
+    localObject1 = getTarget();                  localObject1 = getTarget();
+    ...                                          ...
+} while (...);                               } while (...);
+localObject1 = this.list;              →     TickleNode tickleNode = this.list;
+... ((TickleNode) localObject1).next ...     ... tickleNode.next ...
+```
+
+a variable is split at `v = expr;` statements directly in its declaring block (and not reading `v`),
+nothing assigned before can be read after such a statement, so the pieces are independent.
+an `Object` piece gets the type of its values when they are all casts, `new` or variables/fields of one type,
+and it is used only cast to that type, compared, tested by `instanceof`, assigned or returned (an argument could change the overload),
+then the casts are gone. a declaration whose value is never read is joined with the first assignment.
+
+#### names by hand
+
+```
+Owner.method/arity:localName      newName   # all locals of the name in the method
+Owner.method(int):str@2           title     # the 2nd one in source order
+```
+
 ### name map
 
 ```
@@ -98,7 +125,7 @@ a workflow that worked for 8,000 parameters:
 
 ```
 java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex] [--poison a,b] \
-    [--unwrap ID] [--type-name QDRect=rect] [--no-type-fallback] [--locals] [--local-pattern re] [--report file] [--apply] srcdir...
+    [--unwrap ID] [--type-name QDRect=rect] [--no-type-fallback] [--locals] [--local-pattern re] [--split] [--report file] [--apply] srcdir...
 ```
 
 ## References
@@ -108,5 +135,5 @@ java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex]
 
 ## TODO
 
- * a name map for locals
- * more refactorings (`localObject` reused for different types could be split, ...)
+ * split locals declared in other places than a block (`for`, `switch`)
+ * `var` for retyped pieces whose type is long

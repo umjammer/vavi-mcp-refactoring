@@ -57,11 +57,14 @@ public class JavaProject {
         final Path path;
         final String source;
         final CompilationUnit cu;
+        /** the source differs from the file, it has to be written */
+        final boolean modified;
 
-        Unit(Path path, String source, CompilationUnit cu) {
+        Unit(Path path, String source, CompilationUnit cu, boolean modified) {
             this.path = path;
             this.source = source;
             this.cu = cu;
+            this.modified = modified;
         }
 
         public Path path() {
@@ -183,12 +186,21 @@ public class JavaProject {
     /** simple type name -> direct super types */
     final Map<String, Set<String>> supers = new HashMap<>();
     final Map<String, Set<String>> subs = new HashMap<>();
+    /** simple type name -> declarations */
+    final Map<String, List<TypeDeclaration<?>>> types = new HashMap<>();
     final List<String> problems = new ArrayList<>();
 
     /**
      * @param roots source directories or single java files
      */
     public JavaProject(List<Path> roots) throws IOException {
+        this(roots, Map.of());
+    }
+
+    /**
+     * @param edited sources to use instead of the files, they are marked as modified
+     */
+    JavaProject(List<Path> roots, Map<Path, String> edited) throws IOException {
         this.roots = roots;
         JavaParser parser = new JavaParser(new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_25));
         for (Path root : roots) {
@@ -197,19 +209,21 @@ public class JavaProject {
                 files = s.filter(x -> x.toString().endsWith(".java") && Files.isRegularFile(x)).sorted().toList();
             }
             for (Path p : files) {
-                String source = Files.readString(p);
+                boolean modified = edited.containsKey(p);
+                String source = modified ? edited.get(p) : Files.readString(p);
                 ParseResult<CompilationUnit> r = parser.parse(source);
                 if (!r.isSuccessful() || r.getResult().isEmpty()) {
                     problems.add(p + ": " + r.getProblems());
                     logger.log(Level.WARNING, "parse failed: " + p + " " + r.getProblems());
                     continue;
                 }
-                units.add(new Unit(p, source, r.getResult().get()));
+                units.add(new Unit(p, source, r.getResult().get(), modified));
             }
         }
         for (Unit u : units) {
             for (TypeDeclaration<?> t : u.cu.findAll(TypeDeclaration.class)) {
                 String tn = t.getNameAsString();
+                types.computeIfAbsent(tn, k -> new ArrayList<>()).add(t);
                 Set<String> ss = supers.computeIfAbsent(tn, k -> new HashSet<>());
                 if (t instanceof ClassOrInterfaceDeclaration c) {
                     c.getExtendedTypes().forEach(x -> ss.add(x.getNameAsString()));
@@ -226,6 +240,14 @@ public class JavaProject {
             }
         }
         logger.log(Level.DEBUG, "units: " + units.size() + ", methods: " + methods.size());
+    }
+
+    /** a project with some sources edited (in memory) */
+    JavaProject reparse(Map<Path, String> edited) throws IOException {
+        Map<Path, String> all = new HashMap<>();
+        for (Unit u : units) if (u.modified) all.put(u.path, u.source);
+        all.putAll(edited);
+        return new JavaProject(roots, all);
     }
 
     public List<Unit> units() {
@@ -247,6 +269,26 @@ public class JavaProject {
 
     Set<String> supers(String type) {
         return supers.getOrDefault(type, Set.of());
+    }
+
+    /**
+     * the declared type of a field of the type or its super types in the project.
+     * @return null when not found, or when types of the name disagree
+     */
+    String fieldType(String type, String field) {
+        Set<String> seen = new HashSet<>();
+        Deque<String> q = new ArrayDeque<>(List.of(type));
+        while (!q.isEmpty()) {
+            String t = q.pop();
+            if (!seen.add(t)) continue;
+            Set<String> found = new HashSet<>();
+            for (TypeDeclaration<?> td : types.getOrDefault(t, List.of()))
+                td.getFieldByName(field).ifPresent(f -> f.getVariables().stream().filter(v -> v.getNameAsString().equals(field)).forEach(v -> found.add(v.getType().asString())));
+            if (found.size() == 1) return found.iterator().next();
+            if (found.size() > 1) return null;
+            q.addAll(supers(t));
+        }
+        return null;
     }
 
     /** all super and sub types of the type, excluding itself */

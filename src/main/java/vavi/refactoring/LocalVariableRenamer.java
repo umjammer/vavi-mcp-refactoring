@@ -11,6 +11,8 @@ import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -171,6 +173,10 @@ public class LocalVariableRenamer {
         this.project = parameters.project();
     }
 
+    JavaProject project() {
+        return project;
+    }
+
     /** sets the names to rename, this turns off the declared type check */
     public LocalVariableRenamer pattern(String regex) {
         this.pattern = Pattern.compile(regex);
@@ -198,8 +204,11 @@ public class LocalVariableRenamer {
 
     // ---- collecting ----
 
+    private boolean collected;
+
     /** finds the locals and resolves their references */
     void collect() {
+        collected = true;
         project.methods.forEach(m -> methods.put(m.decl, m));
         for (Method m : project.methods) {
             if (isNested(m.decl)) continue;
@@ -313,6 +322,49 @@ public class LocalVariableRenamer {
         return d;
     }
 
+    // ---- name map ----
+
+    private final List<String> warnings = new ArrayList<>();
+
+    /** problems found while applying a name map */
+    public List<String> warnings() {
+        return warnings;
+    }
+
+    /**
+     * applies local names given by hand, see {@link NameMap}.
+     * @return number of renamed locals
+     */
+    public int apply(NameMap map) {
+        if (map.localKeys().isEmpty()) return 0;
+        Set<String> used = new HashSet<>();
+        Map<String, Integer> occurrences = new HashMap<>();
+        int count = 0;
+        List<Local> all = new ArrayList<>();
+        if (!collected) collect();
+        allLocals.values().forEach(all::addAll);
+        all.sort((a, b) -> a.nameNode.getBegin().get().compareTo(b.nameNode.getBegin().get()));
+        for (Local l : all) {
+            int n = occurrences.merge(System.identityHashCode(l.method) + ":" + l.originalName, 1, Integer::sum);
+            String[] found = map.lookupLocal(l.method, l.originalName, n);
+            if (found == null) continue;
+            used.add(found[0]);
+            String name = found[1];
+            if (!ParameterRenamer.isValidName(name) || clashes(l, name)) {
+                warnings.add("invalid or clashing name " + name + " for " + l);
+            } else if (l.ambiguous) {
+                warnings.add("references can't be resolved for sure, not renamed: " + l);
+            } else {
+                l.name = name;
+                l.reason = "manual";
+                if (!locals.contains(l)) locals.add(l); // a local that is not obfuscated
+                count++;
+            }
+        }
+        for (String key : map.localKeys()) if (!used.contains(key)) warnings.add("no local for " + key);
+        return count;
+    }
+
     // ---- inference ----
 
     /**
@@ -320,7 +372,7 @@ public class LocalVariableRenamer {
      * @return number of renamed locals
      */
     public int infer() {
-        if (locals.isEmpty()) collect();
+        if (!collected) collect();
         int n = 0;
         for (Local l : locals) {
             if (l.ambiguous || !l.name.equals(l.originalName)) continue;
@@ -372,7 +424,9 @@ public class LocalVariableRenamer {
 
     private List<Candidate> candidates(Local l) {
         List<Candidate> out = new ArrayList<>();
-        Set<Node> refs = new HashSet<>(l.refs);
+        // identities, javaparser nodes are equal when they look the same
+        Set<Node> refs = Collections.newSetFromMap(new IdentityHashMap<>());
+        refs.addAll(l.refs);
 
         if (l.declaration instanceof Parameter) {
             out.add(new Candidate("e", "catch"));
@@ -401,6 +455,7 @@ public class LocalVariableRenamer {
         out.addAll(parameters.fromCallees(l.method, new Variable() {
             @Override public Type type() { return l.type; }
             @Override public boolean isRef(Expression e) { return refs.contains(e); }
+            @Override public boolean isLocal() { return true; }
         }, body));
 
         // initialized or assigned with a getter
@@ -425,7 +480,9 @@ public class LocalVariableRenamer {
         // its type
         String base = parameters.typeBasedName(l.type, false);
         if (base != null) {
+            // the digits of localObject2 only tell it from other locals, try without them first
             String digits = l.originalName.replaceAll("^.*?(\\d*)$", "$1");
+            out.add(new Candidate(base, "type"));
             out.add(new Candidate(base + digits, "type"));
             out.add(new Candidate(base + (digits.isEmpty() ? "2" : digits + "_"), "type"));
         }
@@ -436,7 +493,7 @@ public class LocalVariableRenamer {
 
     /** all obfuscated locals */
     public List<Local> locals() {
-        if (locals.isEmpty()) collect();
+        if (!collected) collect();
         return locals;
     }
 

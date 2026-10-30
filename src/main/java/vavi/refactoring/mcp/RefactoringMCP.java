@@ -39,6 +39,7 @@ import io.modelcontextprotocol.spec.McpSchema.Tool;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
+import vavi.refactoring.Deobfuscator;
 import vavi.refactoring.JavaProject;
 import vavi.refactoring.JavaProject.Method;
 import vavi.refactoring.LocalVariableRenamer;
@@ -400,9 +401,13 @@ public class RefactoringMCP {
                         " then the locals use those names: a catch parameter is 'e', the element of a for-each over 'listeners' is 'listener'," +
                         " then an assigned field, the parameter of the method it is passed to (out parameters like int[] arrayOfInt), a getter it is initialized with" +
                         " (x = getTrack() -> track), the getter it is returned from and finally its type." +
-                        " References are resolved by java scoping, and a name never clashes with an overlapping variable or a reference in the scope", createSchema(properties(concat(new Object[] {
+                        " References are resolved by java scoping, and a name never clashes with an overlapping variable or a reference in the scope." +
+                        " With split_reused, a local reused for different values (Object localObject holding a target, later a node) is split into one variable" +
+                        " per value first, an Object piece gets the type of its values and its casts are removed." +
+                        " name_map also takes locals: 'Owner.method/arity:localName newName', 'Owner.method/arity:str@2 title' for the 2nd str", createSchema(properties(concat(new Object[] {
                         "roots", ROOTS,
                         "pattern", PATTERN}, PARAMETER_OPTIONS, new Object[] {
+                        "split_reused", Map.of("type", "boolean", "optional", true, "description", "Split locals reused for different values first (default: false)"),
                         "local_pattern", Map.of("type", "string", "optional", true,
                                 "description", "Regex of locals to rename (default: " + LocalVariableRenamer.DEFAULT_PATTERN + " that spell the declared type)"),
                         "apply", Map.of("type", "boolean", "optional", true, "description", "Write the parameter and local renames into the files (default: false, a dry run)"),
@@ -410,14 +415,11 @@ public class RefactoringMCP {
                         "limit", Map.of("type", "number", "optional", true, "description", "At most this many renames and unresolved locals in the result (default: 200)")
                 })))),
                 handler(args -> () -> {
-                    JavaProject project = new JavaProject(roots(args));
-                    ParameterRenamer renamer = new ParameterRenamer(project, options(args));
-                    renamer.apply(nameMap(args));
-                    renamer.infer();
-                    LocalVariableRenamer locals = new LocalVariableRenamer(renamer);
-                    String localPattern = stringArg(args, "local_pattern", null);
-                    if (localPattern != null) locals.pattern(localPattern);
-                    locals.infer();
+                    Deobfuscator d = new Deobfuscator(roots(args), options(args)).nameMap(nameMap(args)).locals(true)
+                            .localPattern(stringArg(args, "local_pattern", null)).split(booleanArg(args, "split_reused", false)).run();
+                    JavaProject project = d.project();
+                    ParameterRenamer renamer = d.parameters();
+                    LocalVariableRenamer locals = d.locals();
                     List<Local> renames = locals.renames();
                     List<Local> unresolved = locals.unresolved();
                     int limit = intArg(args, "limit", 200);
@@ -426,16 +428,20 @@ public class RefactoringMCP {
                     renames.forEach(l -> byReason.merge(category(l.reason()), 1, Integer::sum));
 
                     StringBuilder sb = new StringBuilder();
-                    sb.append(renamer.countObfuscated(true)).append(" obfuscated parameters, ").append(renamer.renames().size()).append(" renamed, ")
+                    if (d.splitter() != null) {
+                        sb.append(d.splitter().splits().size()).append(" locals split, ").append(d.splitter().retyped()).append(" pieces retyped\n");
+                    }
+                    sb.append(d.obfuscatedParameters()).append(" obfuscated parameters, ").append(renamer.renames().size()).append(" renamed, ")
                             .append(renamer.countObfuscated(false)).append(" left\n");
                     sb.append(locals.locals().size()).append(" obfuscated locals, ").append(renames.size()).append(" renamed ").append(byReason)
                             .append(", ").append(unresolved.size()).append(" left\n");
                     project.problems().forEach(p -> sb.append("parse error: ").append(p).append('\n'));
-                    renamer.warnings().stream().limit(20).forEach(w -> sb.append("warning: ").append(w).append('\n'));
+                    d.warnings().stream().limit(20).forEach(w -> sb.append("warning: ").append(w).append('\n'));
 
                     String reportFile = stringArg(args, "report_file", null);
                     if (reportFile != null) {
                         StringBuilder report = new StringBuilder();
+                        if (d.splitter() != null) d.splitter().splits().forEach(x -> report.append(x.file()).append(':').append(x.line()).append(" SPLIT ").append(x).append('\n'));
                         renamer.renames().forEach(r -> report.append(location(r.method())).append(' ').append(r).append('\n'));
                         renames.forEach(l -> report.append(l.method().unit().path()).append(':').append(l.line()).append(" LOCAL ").append(l).append('\n'));
                         unresolved.forEach(l -> report.append(l.method().unit().path()).append(':').append(l.line()).append(" LOCAL UNRESOLVED ").append(l).append('\n'));
@@ -444,11 +450,15 @@ public class RefactoringMCP {
                     }
 
                     if (booleanArg(args, "apply", false)) {
-                        sb.append("wrote ").append(locals.write().size()).append(" files\n");
+                        sb.append("wrote ").append(d.write().size()).append(" files\n");
                     } else {
                         sb.append("dry run, nothing written (use apply: true)\n");
                     }
 
+                    if (d.splitter() != null && !d.splitter().splits().isEmpty()) {
+                        sb.append("\nsplits:\n");
+                        d.splitter().splits().stream().limit(limit).forEach(x -> sb.append("  ").append(x).append('\n'));
+                    }
                     sb.append("\nlocal renames:\n");
                     renames.stream().limit(limit).forEach(l -> sb.append("  ").append(l).append('\n'));
                     if (renames.size() > limit) sb.append("  ... ").append(renames.size() - limit).append(" more").append(reportFile == null ? ", use report_file" : "").append('\n');
