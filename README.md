@@ -1,6 +1,6 @@
 [![Release](https://jitpack.io/v/umjammer/vavi-mcp-refactoring.svg)](https://jitpack.io/#umjammer/vavi-mcp-refactoring)
 [![Java CI](https://github.com/umjammer/vavi-mcp-refactoring/actions/workflows/maven.yml/badge.svg)](https://github.com/umjammer/vavi-mcp-refactoring/actions/workflows/maven.yml)
-[![CodeQL](https://github.com/umjammer/vavi-mcp-refactoring/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/umjammer/vavi-mcp-refactoring/actions/workflows/codeql-analysis.yml)
+[![CodeQL](https://github.com/umjammer/vavi-mcp-refactoring/actions/workflows/codeql.yml/badge.svg)](https://github.com/umjammer/vavi-mcp-refactoring/actions/workflows/codeql.yml)
 ![Java](https://img.shields.io/badge/Java-25-b07219)
 
 # vavi-mcp-refactoring
