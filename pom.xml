@@ -7,7 +7,7 @@
 
   <groupId>vavi</groupId>
   <artifactId>vavi-mcp-refactoring</artifactId>
-  <version>0.0.1-SNAPSHOT</version>
+  <version>0.0.1</version>
 
   <name>vavi-mcp-refactoring</name>
   <description>MCP server for java source refactoring (deobfuscating parameter names)</description>
