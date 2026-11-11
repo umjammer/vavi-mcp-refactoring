@@ -238,7 +238,14 @@ public class JarDeobfuscator {
             try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(ff.resolve(named().getFileName())))) {
                 for (ZipEntry e; (e = zis.getNextEntry()) != null; ) {
                     if (!wanted.contains(e.getName())) continue;
-                    Files.write(src.resolve(e.getName()), zis.readAllBytes());
+                    Path target = src.resolve(e.getName()).normalize();
+                    if (!target.startsWith(src)) {
+                        throw new IOException("Bad zip entry: " + e.getName());
+                    }
+                    if (target.getParent() != null) {
+                        Files.createDirectories(target.getParent());
+                    }
+                    Files.write(target, zis.readAllBytes());
                     n++;
                 }
             }
