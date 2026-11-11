@@ -5,6 +5,8 @@
 
 # vavi-mcp-refactoring
 
+<img alt="logo" src="src/test/resources/duke_mcp_refactoring.png" width="160" />
+
 🔧 Model Context Protocol server for refactoring java sources.
 
 the first tool set gives decompiled code its parameter names back (`paramInt1`, `paramArrayOfByte` ...),
@@ -142,7 +144,7 @@ java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex]
 ### jars: a new version referring to older ones
 
 the second tool set (`vavi.refactoring.bytecode`, the jdk class-file api only) de-obfuscates a new version of
-an obfuscated jar from the older ones de-obfuscated already, extracted from deobfuscating j80 6.138 referring to 6.123.
+an obfuscated jar from the older ones de-obfuscated already, extracted from deobfuscating a sample 6.138 referring to 6.123.
 
  1. `match-jars`: new obfuscated jar → old obfuscated jar → old de-obfuscated classes, a chain of structural matches
     (bags of features, mutual best matches, the order of members, families of overriding methods).
@@ -159,7 +161,7 @@ an obfuscated jar from the older ones de-obfuscated already, extracted from deob
     and renamed in the sources (`var` + slot), the types stay the ones the decompiler infers.
     then `infer-local-names` for the rest
 
-in j80 6.138 (252 classes) all classes and members were named, 3,605 of ~6,200 locals came from 6.123, 1,153 were inferred,
+in a sample 6.138 (252 classes) all classes and members were named, 3,605 of ~6,200 locals came from 6.123, 1,153 were inferred,
 and the sources compile to the same bytecode as before the local renames.
 
 ```
@@ -176,4 +178,9 @@ java -cp ... vavi.refactoring.bytecode.JarMatcher match|names|rename|throws|unsh
 
 ## TODO
 
- * nothing for now
+ * research
+   * [Krakatau](https://github.com/Storyyeller/Krakatau)
+
+---
+
+<sub>image designed by @umjammer, drawn by nano banana</sub>
