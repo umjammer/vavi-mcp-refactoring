@@ -37,6 +37,11 @@ claude mcp add refactoring -- java -cp /path/to/vavi-mcp-refactoring.jar:... vav
 | infer-parameter-names | infers names (dry run by default), `apply: true` writes them |
 | infer-local-names | names the parameters, then JD style locals (`localQDRect`, `arrayOfInt2`, `str`, `localIOException` ...) |
 | rename-parameter | renames one parameter in a file, refuses clashing names |
+| match-jars | derives a mapping for an obfuscated jar from older versions by structural matching |
+| prepare-jar | applies the mapping to the jar and prepares it for decompiling, finds the names of the locals |
+| decompile-jar | vineflower (fernflower for some classes), then a patch of fixes by hand |
+| transfer-local-names | names decompiled locals (`var12`) after the bytecode of an older version |
+| deobfuscate-jar | all of the above, then the inference of the rest |
 
 ### how names are found
 
@@ -134,10 +139,40 @@ java -cp ... vavi.refactoring.ParameterRenamerCli [--map file] [--pattern regex]
     [--unwrap ID] [--type-name QDRect=rect] [--no-type-fallback] [--locals] [--local-pattern re] [--split] [--var-over n] [--report file] [--apply] srcdir...
 ```
 
+### jars: a new version referring to older ones
+
+the second tool set (`vavi.refactoring.bytecode`, the jdk class-file api only) de-obfuscates a new version of
+an obfuscated jar from the older ones de-obfuscated already, extracted from deobfuscating j80 6.138 referring to 6.123.
+
+ 1. `match-jars`: new obfuscated jar → old obfuscated jar → old de-obfuscated classes, a chain of structural matches
+    (bags of features, mutual best matches, the order of members, families of overriding methods).
+    writes a proguard mapping, parameter names and `report.txt` (`HINT`, `AMBIGUOUS`, `LOW`, `CLASH` ...).
+    what has no counterpart gets a placeholder (`Obf_x`, `f_x__y`, `m_x__y`, listed in `todo.txt`), name it in a names file
+    (`placeholder newName`, `pkg.Class.member newName` to fix a name) and match again
+ 1. `prepare-jar`: renames (also methods the obfuscator named alike that do not override each other, which proguard can't),
+    raises the access the obfuscator weakened, drops bogus `final`, derives the `throws` clauses it dropped from the code,
+    gives every variable a slot of its own, makes the methods of merged interfaces default methods, writes the parameter names
+ 1. `decompile-jar`: vineflower, fernflower for the classes it does better, then `patch -p0` of fixes by hand
+    (made against `work/src.orig`)
+ 1. `transfer-local-names`: the locals of a method are aligned with the ones of the same method in the old classes
+    (compiled with `-g`) by the order of their first store, their kind and the instruction producing the value,
+    and renamed in the sources (`var` + slot), the types stay the ones the decompiler infers.
+    then `infer-local-names` for the rest
+
+in j80 6.138 (252 classes) all classes and members were named, 3,605 of ~6,200 locals came from 6.123, 1,153 were inferred,
+and the sources compile to the same bytecode as before the local renames.
+
+```
+java -cp ... vavi.refactoring.bytecode.JarDeobfuscator new.jar outdir work old.jar old/classes \
+    [--names f] [--params f] [--mapping f] [--defaults pkg.If,...] [--fernflower jar pkg/Class,...] [--patch f] [--no-infer]
+java -cp ... vavi.refactoring.bytecode.JarMatcher match|names|rename|throws|unshare|defaults|inject|locals|compose|todo ...
+```
+
 ## References
 
  * [javaparser](https://github.com/javaparser/javaparser)
  * [mcp java sdk](https://github.com/modelcontextprotocol/java-sdk)
+ * [vineflower](https://github.com/Vineflower/vineflower)
 
 ## TODO
 

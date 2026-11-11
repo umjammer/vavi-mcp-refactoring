@@ -10,7 +10,7 @@
   <version>0.0.1</version>
 
   <name>vavi-mcp-refactoring</name>
-  <description>MCP server for java source refactoring (deobfuscating parameter names)</description>
+  <description>MCP server for java source refactoring (deobfuscating parameter names, de-obfuscating jars referring to older versions)</description>
   <url>https://github.com/umjammer/vavi-mcp-refactoring</url>
   <scm>
     <url>https://github.com/umjammer/vavi-mcp-refactoring</url>
@@ -179,6 +179,11 @@
   <artifactId>guava</artifactId>
   <version>33.7.2-jre</version>
 </dependency>
+    <dependency>
+      <groupId>org.vineflower</groupId>
+      <artifactId>vineflower</artifactId>
+      <version>1.11.2</version>
+    </dependency>
     <dependency>
       <groupId>com.google.code.gson</groupId>
       <artifactId>gson</artifactId>
