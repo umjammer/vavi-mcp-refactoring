@@ -18,6 +18,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -375,6 +376,43 @@ public class LocalVariableRenamer {
             }
         }
         for (String key : map.localKeys()) if (!used.contains(key)) warnings.add("no local for " + key);
+        return count;
+    }
+
+    /**
+     * gives locals names found elsewhere (e.g. {@link LocalNameTransfer}): a clashing name gets a
+     * number (name2, name3 ...), the scopes of a decompiled method do not need to be those of the
+     * method the names come from.
+     * @param names the name of a local, null for none
+     * @param reason why, for {@link Local#reason()}
+     * @return number of renamed locals
+     */
+    public int assign(Function<Local, String> names, String reason) {
+        if (!collected) collect();
+        List<Local> all = new ArrayList<>();
+        allLocals.values().forEach(all::addAll);
+        all.sort((a, b) -> a.nameNode.getBegin().get().compareTo(b.nameNode.getBegin().get()));
+        Set<Local> listed = Collections.newSetFromMap(new IdentityHashMap<>());
+        listed.addAll(locals);
+        int count = 0;
+        for (Local l : all) {
+            String base = names.apply(l);
+            if (base == null) continue;
+            if (!ParameterRenamer.isValidName(base)) {
+                warnings.add("invalid name " + base + " for " + l);
+                continue;
+            }
+            if (l.ambiguous) {
+                warnings.add("references can't be resolved for sure, not renamed: " + l);
+                continue;
+            }
+            String name = base;
+            for (int n = 2; clashes(l, name); n++) name = base + n;
+            l.name = name;
+            l.reason = reason;
+            if (listed.add(l)) locals.add(l); // a local that is not obfuscated
+            count++;
+        }
         return count;
     }
 

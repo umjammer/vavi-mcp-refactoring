@@ -13,7 +13,8 @@ import java.util.List;
 
 
 /**
- * Runs the refactorings in their order: splitting reused locals, naming parameters, naming locals.
+ * Runs the refactorings in their order: splitting reused locals, naming parameters, naming locals
+ * (names from the bytecode, see {@link LocalNameTransfer}, then the name map, then inferred).
  * Nothing is written until {@link #write()}.
  *
  * @author <a href="mailto:umjammer@gmail.com">Naohide Sano</a> (nsano)
@@ -28,6 +29,8 @@ public class Deobfuscator {
     private String localPattern;
     private boolean split;
     private int varOver;
+    private LocalNameTransfer transfer;
+    private boolean infer = true;
 
     private JavaProject project;
     private ParameterRenamer parameterRenamer;
@@ -70,6 +73,26 @@ public class Deobfuscator {
         return this;
     }
 
+    /** names locals after the slots first, implies {@link #locals(boolean)} */
+    public Deobfuscator transfer(LocalNameTransfer transfer) {
+        this.transfer = transfer;
+        if (transfer != null) locals = true;
+        return this;
+    }
+
+    /** infers names, false: only the name map and the transfer (default: true) */
+    public Deobfuscator infer(boolean infer) {
+        this.infer = infer;
+        return this;
+    }
+
+    /** locals named by the transfer */
+    public int transferred() {
+        return transferred;
+    }
+
+    private int transferred;
+
     private LocalVariableRenamer newLocalRenamer(ParameterRenamer parameters) {
         LocalVariableRenamer l = new LocalVariableRenamer(parameters);
         if (localPattern != null) l.pattern(localPattern);
@@ -86,11 +109,12 @@ public class Deobfuscator {
         parameterRenamer = new ParameterRenamer(project, options);
         obfuscatedParameters = parameterRenamer.countObfuscated(true);
         parameterRenamer.apply(nameMap);
-        parameterRenamer.infer();
+        if (infer) parameterRenamer.infer();
         if (locals) {
             localRenamer = newLocalRenamer(parameterRenamer);
+            if (transfer != null) transferred = localRenamer.assign(transfer::nameOf, "transfer");
             localRenamer.apply(nameMap);
-            localRenamer.infer();
+            if (infer) localRenamer.infer();
         }
         return this;
     }
