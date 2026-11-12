@@ -44,6 +44,7 @@ claude mcp add refactoring -- java -cp /path/to/vavi-mcp-refactoring.jar:... vav
 | decompile-jar | vineflower (fernflower for some classes), then a patch of fixes by hand |
 | transfer-local-names | names decompiled locals (`var12`) after the bytecode of an older version |
 | deobfuscate-jar | all of the above, then the inference of the rest |
+| align-versions | makes the decompiled sources of two versions identical where the code is the same |
 
 ### how names are found
 
@@ -168,6 +169,29 @@ and the sources compile to the same bytecode as before the local renames.
 java -cp ... vavi.refactoring.bytecode.JarDeobfuscator new.jar outdir work old.jar old/classes \
     [--names f] [--params f] [--mapping f] [--defaults pkg.If,...] [--fernflower jar pkg/Class,...] [--patch f] [--no-infer]
 java -cp ... vavi.refactoring.bytecode.JarMatcher match|names|rename|throws|unshare|defaults|inject|locals|compose|todo ...
+```
+
+### two versions side by side
+
+two versions de-obfuscated one by one get different names for the same variable
+(one named by the bytecode of a reference, the other `var12` or named after a slot holding something else)
+and their members come in different orders, a diff between them is mostly noise. `align-versions` (`VersionAligner`)
+
+ 1. aligns the tokens of each pair of files (like python's difflib) and resolves every local, parameter and label to its
+    declaration on both sides. a pair that (nearly) always corresponds and has the same declared type gets one name:
+    a real name wins over `var12` and a numbered one (`offset2`, `self`), on a tie the preferred side.
+    "nearly": the signature of a method whose parameters were reordered disagrees with every use, its parameters get
+    the right names. a rename that clashes is tried the other way round, never giving a real name up for `var12`
+ 1. orders the members of side a like side b where nothing runs differently: methods, constructors, nested types,
+    fields without an initializer and constants. members renamed on purpose are paired by an aliases file
+    (`pkg/Class.java nameInA nameInB`)
+ 1. the names again, the tokens are aligned better then
+
+on the sample 6.123 and 6.138 (250 common classes) it took the diff from 35,302 to 31,102 lines, side b compiles to the same
+bytecode as before, side a to the same members in another order.
+
+```
+java -cp ... vavi.refactoring.VersionAligner [--dry-run] [--prefer a|b] [--aliases file] [--names-only|--members-only] dirA dirB
 ```
 
 ## References
