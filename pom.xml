@@ -136,17 +136,17 @@
 <dependency>
   <groupId>tools.jackson.core</groupId>
   <artifactId>jackson-core</artifactId>
-  <version>3.2.4</version>
+  <version>3.3.0</version>
 </dependency>
 <dependency>
   <groupId>tools.jackson.core</groupId>
   <artifactId>jackson-databind</artifactId>
-  <version>3.2.4</version>
+  <version>3.3.0</version>
 </dependency>
 <dependency>
   <groupId>tools.jackson.dataformat</groupId>
   <artifactId>jackson-dataformat-yaml</artifactId>
-  <version>3.2.2</version>
+  <version>3.3.0</version>
 </dependency>
     <dependency>
       <groupId>io.projectreactor</groupId>
@@ -177,7 +177,7 @@
 <dependency>
   <groupId>com.google.guava</groupId>
   <artifactId>guava</artifactId>
-  <version>33.7.2-jre</version>
+  <version>33.8.0-jre</version>
 </dependency>
     <dependency>
       <groupId>org.vineflower</groupId>
