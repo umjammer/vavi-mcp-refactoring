@@ -49,6 +49,7 @@ import vavi.refactoring.NameMap;
 import vavi.refactoring.ParameterRenamer;
 import vavi.refactoring.ParameterRenamer.Rename;
 import vavi.refactoring.RenameOptions;
+import vavi.refactoring.VersionAligner;
 import vavi.refactoring.bytecode.JarDeobfuscator;
 
 import static java.lang.System.getLogger;
@@ -655,6 +656,56 @@ public class RefactoringMCP {
                         "infer", Map.of("type", "boolean", "optional", true, "description", "Infer names for the parameters and locals the bytecode does not name (default: true)")},
                         MATCH_OPTIONS, PREPARE_OPTIONS, DECOMPILE_OPTIONS)))),
                 handler(args -> () -> jarDeobfuscator(args).run(Path.of(stringArg(args, "out_dir")), booleanArg(args, "infer", true)))
+        );
+
+        server.toolCall(tool(
+                        "align-versions",
+                        "Make the decompiled sources of two versions identical where the code is the same, so a diff between them shows only what changed:" +
+                        " the locals, parameters and labels that correspond in the aligned tokens of both get one name (a real name wins over var12" +
+                        " and a numbered one, on a tie the preferred side), the members of a are ordered like those of b (methods, nested types," +
+                        " fields that are no code). Both sides are renamed, line numbers of b stay. Run after deobfuscate-jar of both", createSchema(properties(
+                        "a", Map.of("type", "string", "description", "Source root of one version (absolute path), its members are reordered"),
+                        "b", Map.of("type", "string", "description", "Source root of the other version (absolute path)"),
+                        "prefer", Map.of("type", "string", "optional", true, "enum", List.of("a", "b"),
+                                "description", "Whose name wins when both are real names (default: a)"),
+                        "aliases_file", Map.of("type", "string", "optional", true,
+                                "description", "Members named differently on purpose (e.g. renumbered), 'pkg/Class.java nameInA nameInB' per line"),
+                        "names", Map.of("type", "boolean", "optional", true, "description", "Align the names (default: true)"),
+                        "members", Map.of("type", "boolean", "optional", true, "description", "Align the order of the members (default: true)"),
+                        "apply", Map.of("type", "boolean", "optional", true, "description", "Write the changes into the files (default: false, a dry run)"),
+                        "report_file", Map.of("type", "string", "optional", true, "description", "Write the full list of renames and moves to this file")
+                ))),
+                handler(args -> () -> {
+                    VersionAligner va = new VersionAligner(Path.of(stringArg(args, "a")), Path.of(stringArg(args, "b")))
+                            .prefer(VersionAligner.Side.valueOf(stringArg(args, "prefer", "a").toUpperCase()));
+                    Path aliases = pathArg(args, "aliases_file");
+                    if (aliases != null) va.aliases(aliases);
+                    boolean names = booleanArg(args, "names", true), members = booleanArg(args, "members", true);
+                    if (names) va.alignNames();
+                    if (members) va.alignMembers();
+                    if (names && members) va.alignNames();
+                    StringBuilder sb = new StringBuilder();
+                    long ra = va.renames().stream().filter(r -> r.side() == VersionAligner.Side.A).count();
+                    sb.append("renamed: a ").append(ra).append(", b ").append(va.renames().size() - ra)
+                            .append(", moved members: ").append(va.moves().stream().mapToInt(VersionAligner.Move::members).sum())
+                            .append(", files still differing: ").append(va.differingFiles()).append('\n');
+                    va.problems().forEach(p -> sb.append("parse error: ").append(p).append('\n'));
+                    va.renames().stream().limit(30).forEach(r -> sb.append(r).append('\n'));
+                    String reportFile = stringArg(args, "report_file", null);
+                    if (reportFile != null) {
+                        StringBuilder report = new StringBuilder();
+                        va.renames().forEach(r -> report.append(r).append('\n'));
+                        va.moves().forEach(m -> report.append("MOVE ").append(m).append('\n'));
+                        Files.writeString(Path.of(reportFile), report);
+                        sb.append("report: ").append(reportFile).append('\n');
+                    }
+                    if (booleanArg(args, "apply", false)) {
+                        sb.append("wrote ").append(va.write().size()).append(" files\n");
+                    } else {
+                        sb.append("dry run, nothing written (use apply: true)\n");
+                    }
+                    return sb.toString();
+                })
         );
     }
 
